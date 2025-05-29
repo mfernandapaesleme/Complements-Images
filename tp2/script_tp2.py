@@ -59,13 +59,11 @@ def multiscale_vessel_segmentation(img, img_mask, sigma_min=1, sigma_max=5, num_
     binary_vessels = combined > threshold
     print(f"Otsu threshold: {threshold:.4f}")
 
-    # Remove pequenos objetos (ruído)
+    # Removing small objects
     cleaned = opening(binary_vessels, disk(1))
-    
-    # Conecta pequenas quebras
     connected = closing(cleaned, disk(2))
     
-    # 7. Aplicar máscara para manter apenas região de interesse
+    # Masking the result with the inscribed disk mask
     final_result = connected & img_mask.astype(bool)
 
     print(f"Final result - shape: {final_result.shape}, dtype: {final_result.dtype}")
