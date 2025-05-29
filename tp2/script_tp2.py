@@ -50,10 +50,28 @@ def multiscale_vessel_segmentation(img, img_mask, sigma_min=1, sigma_max=5, num_
     for s in selem:
         result = white_tophat(img_contrast, s)  # Realiza a abertura branca
         results_data.append(result)  # Armazena o resultado
+        print(f"Top-hat with disk({s}) - min: {np.min(result):.4f}, max: {np.max(result):.4f}")
 
-    final_result = np.maximum.reduce(results_data)
+    combined = np.maximum.reduce(results_data)
+    print(f"Combined response - min: {np.min(combined):.4f}, max: {np.max(combined):.4f}")
 
-    return final_result
+    threshold = threshold_otsu(combined)
+    binary_vessels = combined > threshold
+    print(f"Otsu threshold: {threshold:.4f}")
+
+    # Remove pequenos objetos (ruído)
+    cleaned = opening(binary_vessels, disk(1))
+    
+    # Conecta pequenas quebras
+    connected = closing(cleaned, disk(2))
+    
+    # 7. Aplicar máscara para manter apenas região de interesse
+    final_result = connected & img_mask.astype(bool)
+
+    print(f"Final result - shape: {final_result.shape}, dtype: {final_result.dtype}")
+    print(f"Pixels detectados: {np.sum(final_result)}")
+
+    return final_result.astype(np.uint8)
 
 def evaluate(img_out, img_GT):
     GT_skel = skeletonize(img_GT) # On reduit le support de l'évaluation...
