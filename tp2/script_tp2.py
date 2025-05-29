@@ -2,10 +2,10 @@ import numpy as np
 from skimage.morphology import erosion, dilation, binary_erosion, opening, closing, white_tophat, reconstruction, black_tophat, skeletonize, convex_hull_image, thin
 from skimage.filters.rank import entropy, enhance_contrast_percentile
 from skimage.morphology import erosion, dilation, binary_erosion, opening, closing, white_tophat, reconstruction, black_tophat, skeletonize, disk, square
-from skimage.filters import threshold_otsu, gaussian
+from skimage.filters import frangi, threshold_otsu, gaussian
 from PIL import Image
 from scipy import ndimage as ndi
-from skimage.util import img_as_ubyte
+from skimage.util import img_as_ubyte, img_as_float
 import math
 from skimage import data, filters
 from matplotlib import pyplot as plt
@@ -14,12 +14,49 @@ import glob
 import cv2
 from image_viewer import ImageViewer
 
+
 def my_segmentation(img, img_mask, seuil):
     img_out = (img_mask & (img < seuil))
-    return img_out
+    return multiscale_vessel_segmentation(img_out, img_mask)
+
+def multiscale_vessel_segmentation(img, img_mask, sigma_min=1, sigma_max=5, num_sigma=5):
+    """
+    Parameters:
+    -----------
+    img : ndarray
+        Image d'entrée en niveaux de gris
+    img_mask : ndarray
+        Masque binaire indiquant la région d'intérêt
+    sigma_min : float
+        Échelle minimale pour le filtre Frangi
+    sigma_max : float
+        Échelle maximale pour le filtre Frangi
+    num_sigma : int
+        Nombre d'échelles à considérer
+        
+    Returns:
+    --------
+    vessel_segmentation : ndarray
+        Segmentation binaire des vaisseaux
+    """
+    # Prétraitement : amélioration du contraste et illumination
+    img_contrast = enhance_contrast_percentile(img_as_ubyte(img), disk(5), p0=0.8, p1=99.2)
+    print (f"Image contrast shape: {img_contrast.shape}, dtype: {img_contrast.dtype}")
+    
+    # Multiscale vessel segmentation using Frangi filter
+    selem = [disk(1), disk(2), disk(3), disk(5), disk(7)]  # Para vasos de diferentes espessuras
+    results_data = []
+
+    for s in selem:
+        result = white_tophat(img_contrast, s)  # Realiza a abertura branca
+        results_data.append(result)  # Armazena o resultado
+
+    final_result = np.maximum.reduce(results_data)
+
+    return final_result
 
 def evaluate(img_out, img_GT):
-    GT_skel = skeletonize(img_GT) # On reduit le support de l'evaluation...
+    GT_skel = skeletonize(img_GT) # On reduit le support de l'évaluation...
     img_out_skel = skeletonize(img_out) # ...aux pixels des squelettes
     TP = np.sum(img_out_skel & img_GT) # Vrais positifs
     FP = np.sum(img_out_skel & ~img_GT) # Faux positifs
