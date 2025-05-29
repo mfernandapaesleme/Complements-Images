@@ -15,61 +15,141 @@ import cv2
 from image_viewer import ImageViewer
 
 
-def my_segmentation(img, img_mask, seuil):
-    img_out = (img_mask & (img < seuil))
-    return multiscale_vessel_segmentation(img_out, img_mask)
+import numpy as np
+from skimage.morphology import erosion, dilation, binary_erosion, opening, closing, white_tophat, reconstruction, black_tophat, skeletonize, disk, square
+from skimage.filters import frangi, threshold_otsu, gaussian, threshold_local
+from skimage.filters.rank import enhance_contrast_percentile
+from PIL import Image
+from scipy import ndimage as ndi
+from skimage.util import img_as_ubyte, img_as_float
+from skimage import filters, morphology
+import cv2
 
-def multiscale_vessel_segmentation(img, img_mask, sigma_min=1, sigma_max=5, num_sigma=5):
+def frangi_segmentation(img, img_mask, adaptive_threshold=False):
     """
-    Parameters:
-    -----------
-    img : ndarray
-        Image d'entrée en niveaux de gris
-    img_mask : ndarray
-        Masque binaire indiquant la région d'intérêt
-    sigma_min : float
-        Échelle minimale pour le filtre Frangi
-    sigma_max : float
-        Échelle maximale pour le filtre Frangi
-    num_sigma : int
-        Nombre d'échelles à considérer
-        
-    Returns:
-    --------
-    vessel_segmentation : ndarray
-        Segmentation binaire des vaisseaux
+    Segmentação melhorada de vasos sanguíneos
     """
-    # Prétraitement : amélioration du contraste et illumination
-    img_contrast = enhance_contrast_percentile(img_as_ubyte(img), disk(5), p0=0.8, p1=99.2)
-    print (f"Image contrast shape: {img_contrast.shape}, dtype: {img_contrast.dtype}")
+    # 1. Preprocessamento mais agressivo
+    img_float = img_as_float(img)
+
+    img_float = erosion(img_float, disk(1))  # Erosão para remover pequenos ruídos
     
-    # Multiscale vessel segmentation using Frangi filter
-    selem = [disk(1), disk(2), disk(3), disk(5), disk(7)]  # Para vasos de diferentes espessuras
-    results_data = []
-
-    for s in selem:
-        result = white_tophat(img_contrast, s)  # Realiza a abertura branca
-        results_data.append(result)  # Armazena o resultado
-        print(f"Top-hat with disk({s}) - min: {np.min(result):.4f}, max: {np.max(result):.4f}")
-
-    combined = np.maximum.reduce(results_data)
-    print(f"Combined response - min: {np.min(combined):.4f}, max: {np.max(combined):.4f}")
-
-    threshold = threshold_otsu(combined)
-    binary_vessels = combined > threshold
-    print(f"Otsu threshold: {threshold:.4f}")
-
-    # Removing small objects
-    cleaned = opening(binary_vessels, disk(1))
-    connected = closing(cleaned, disk(2))
+    # Equalização adaptativa do histograma (CLAHE)
+    img_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    img_enhanced = img_clahe.apply(img_as_ubyte(img_float))
     
-    # Masking the result with the inscribed disk mask
-    final_result = connected & img_mask.astype(bool)
-
-    print(f"Final result - shape: {final_result.shape}, dtype: {final_result.dtype}")
+    # 2. Filtro Frangi para detecção de vasos (IMPLEMENTAÇÃO CORRETA)
+    # Múltiplas escalas para capturar vasos de diferentes larguras
+    sigmas = np.arange(0.5, 5, 0.5)  # Escalas mais finas
+    frangi_response = frangi(img_enhanced, sigmas=sigmas, black_ridges=True)
+    
+    print(f"Frangi response - min: {np.min(frangi_response):.4f}, max: {np.max(frangi_response):.4f}")
+    
+    # 3. Threshold adaptativo em vez de fixo
+    if adaptive_threshold:
+        # Threshold local adaptativo
+        threshold_value = threshold_local(frangi_response, block_size=35, offset=0.01)
+        binary_vessels = frangi_response > threshold_value
+    else:
+        # Otsu threshold no resultado do Frangi
+        threshold_value = threshold_otsu(frangi_response)
+        binary_vessels = frangi_response > threshold_value
+        print(f"Otsu threshold: {threshold_value:.4f}")
+    
+    # 4. Pós-processamento morfológico
+    # Remover ruído pequeno
+    cleaned = morphology.remove_small_objects(binary_vessels, min_size=60)
+    
+    # Conectar estruturas próximas
+    connected = closing(cleaned, disk(1))
+    
+    # Suavização final
+    final_result = opening(connected, disk(1))
+    
+    # Aplicar máscara
+    final_result = final_result & img_mask.astype(bool)
+    
     print(f"Pixels detectados: {np.sum(final_result)}")
-
+    
     return final_result.astype(np.uint8)
+
+def hybrid_segmentation(img, img_mask):
+    """
+    Abordagem híbrida combinando múltiplas técnicas
+    """
+    img_float = img_as_float(img)
+    
+    # 1. Frangi filter
+    sigmas = np.arange(0.5, 4, 0.5)
+    frangi_result = frangi(img_float, sigmas=sigmas, black_ridges=True)
+    
+    # 2. Top-hat transform multi-escala
+    selem_sizes = [1, 2, 3, 5]
+    tophat_results = []
+    for size in selem_sizes:
+        tophat = white_tophat(img_as_ubyte(img_float), disk(size))
+        tophat_results.append(tophat)
+    
+    # Combinar resultados do top-hat
+    combined_tophat = np.maximum.reduce(tophat_results)
+    combined_tophat = img_as_float(combined_tophat)
+    
+    # 3. Combinar Frangi e Top-hat
+    # Normalizar ambos para [0,1]
+    frangi_norm = (frangi_result - np.min(frangi_result)) / (np.max(frangi_result) - np.min(frangi_result))
+    tophat_norm = (combined_tophat - np.min(combined_tophat)) / (np.max(combined_tophat) - np.min(combined_tophat))
+    
+    # Combinação ponderada
+    combined = 0.7 * frangi_norm + 0.3 * tophat_norm
+    
+    # 4. Threshold adaptativo
+    threshold_value = threshold_otsu(combined)
+    binary_vessels = combined > (threshold_value * 0.5)  # Threshold mais baixo para capturar mais vasos
+    
+    # 5. Pós-processamento
+    cleaned = morphology.remove_small_objects(binary_vessels, min_size=5)
+    final_result = closing(cleaned, disk(2))
+    
+    # Aplicar máscara
+    final_result = final_result & img_mask.astype(bool)
+    
+    return final_result.astype(np.uint8)
+
+def simple_vessel_enhancement(img, img_mask):
+    """
+    Abordagem mais simples e direta
+    """
+    # 1. Frangi filter básico
+    img_float = img_as_float(img)
+    sigmas = np.arange(1.0, 2.5, 0.5)
+    frangi_response = frangi(img_float, sigmas=sigmas, black_ridges=True)
+    
+    # 2. Threshold bem conservador - apenas os melhores candidatos
+    threshold_93 = np.percentile(frangi_response, 93)  # Top 7%
+    binary_vessels = frangi_response > threshold_93
+
+    # 3. Limpeza mínima
+    cleaned = morphology.remove_small_objects(binary_vessels, min_size=20)
+    final_result = cleaned & img_mask.astype(bool)
+    
+    print(f"Pixels detectados (método simples): {np.sum(final_result)}")
+    
+    return final_result.astype(np.uint8)
+
+# Função principal atualizada
+def my_segmentation(img, img_mask, method='hybrid'):
+    """
+    Função principal de segmentação melhorada
+    """
+    if method == 'frangi':
+        return frangi_segmentation(img, img_mask)
+    elif method == 'hybrid':
+        return hybrid_segmentation(img, img_mask)
+    elif method == 'simple':
+        return simple_vessel_enhancement(img, img_mask)
+    else:
+        # Método original melhorado
+        return frangi_segmentation(img, img_mask, adaptive_threshold=False)
 
 def evaluate(img_out, img_GT):
     GT_skel = skeletonize(img_GT) # On reduit le support de l'évaluation...
@@ -128,8 +208,8 @@ for img_file in image_files:
         img_mask[invalid_pixels] = 0
         
         # Perform segmentation
-        img_out = my_segmentation(img, img_mask, 80)
-        
+        img_out = my_segmentation(img, img_mask, method='simple')
+
         # Load ground truth
         img_GT = np.asarray(Image.open(gt_file)).astype(np.uint8)
         
