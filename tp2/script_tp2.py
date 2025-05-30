@@ -2,7 +2,8 @@ import numpy as np
 from skimage.morphology import erosion, dilation, binary_erosion, opening, closing, white_tophat, reconstruction, black_tophat, skeletonize, convex_hull_image, thin
 from skimage.filters.rank import entropy, enhance_contrast_percentile
 from skimage.morphology import erosion, dilation, binary_erosion, opening, closing, white_tophat, reconstruction, black_tophat, skeletonize, disk, square
-from skimage.filters import frangi, threshold_otsu, gaussian
+from skimage.filters import frangi, threshold_otsu, gaussian, threshold_local
+from skimage import filters, morphology
 from PIL import Image
 from scipy import ndimage as ndi
 from skimage.util import img_as_ubyte, img_as_float
@@ -14,16 +15,6 @@ import glob
 import cv2
 from image_viewer import ImageViewer
 
-
-import numpy as np
-from skimage.morphology import erosion, dilation, binary_erosion, opening, closing, white_tophat, reconstruction, black_tophat, skeletonize, disk, square
-from skimage.filters import frangi, threshold_otsu, gaussian, threshold_local
-from skimage.filters.rank import enhance_contrast_percentile
-from PIL import Image
-from scipy import ndimage as ndi
-from skimage.util import img_as_ubyte, img_as_float
-from skimage import filters, morphology
-import cv2
 
 def frangi_segmentation(img, img_mask, adaptive_threshold=False):
     """
@@ -41,7 +32,7 @@ def frangi_segmentation(img, img_mask, adaptive_threshold=False):
     # 2. Filtro Frangi para detecção de vasos (IMPLEMENTAÇÃO CORRETA)
     # Múltiplas escalas para capturar vasos de diferentes larguras
     sigmas = np.arange(0.5, 5, 0.5)  # Escalas mais finas
-    frangi_response = frangi(img_enhanced, sigmas=sigmas, black_ridges=True)
+    frangi_response = frangi(img_enhanced, sigmas=sigmas, black_ridges=True, alpha=0.5, beta=0.5)  # add gamma parameter for better contrast?
     
     print(f"Frangi response - min: {np.min(frangi_response):.4f}, max: {np.max(frangi_response):.4f}")
     
@@ -61,7 +52,8 @@ def frangi_segmentation(img, img_mask, adaptive_threshold=False):
     cleaned = morphology.remove_small_objects(binary_vessels, min_size=60)
     
     # Conectar estruturas próximas
-    connected = closing(cleaned, disk(1))
+    connected = closing(cleaned, morphology.rectangle(3, 1))  # Horizontal
+    connected = closing(connected, morphology.rectangle(1, 3))  # Vertical
     
     # Suavização final
     final_result = opening(connected, disk(1))
@@ -208,7 +200,7 @@ for img_file in image_files:
         img_mask[invalid_pixels] = 0
         
         # Perform segmentation
-        img_out = my_segmentation(img, img_mask, method='simple')
+        img_out = my_segmentation(img, img_mask, method='frangi')
 
         # Load ground truth
         img_GT = np.asarray(Image.open(gt_file)).astype(np.uint8)
